@@ -1,0 +1,321 @@
+#!/usr/bin/env python
+
+from __future__ import division
+
+import sys
+import os
+    
+def getFile(dir):
+    return os.path.join(dir,'run.stats')
+
+def getLastRecord(dir):
+    f = open(getFile(dir))
+    try:
+        f.seek(-1024, 2)
+    except IOError:
+        pass # at beginning?
+    for ln in f.read(1024).split('\n')[::-1]:
+        ln = ln.strip()
+        if ln.startswith('(') and ln.endswith(')'):
+            if '(' in ln[1:]:
+                print >>sys.stderr, 'WARNING: corrupted line in file, out of disk space?'
+                ln = ln[ln.index('(',1):]
+            return eval(ln)
+    raise IOError
+
+
+class LazyEvalList:
+    def __init__(self, lines):
+        self.lines = lines
+
+    def __getitem__(self, index):
+        item = self.lines[index]
+        if isinstance(item,str):
+            item = self.lines[index] = eval(item)
+        return item
+
+    def __len__(self):
+        return len(self.lines)
+
+
+def getMatchedRecordIdx(data,reference,key):
+    reference = int(reference)
+    lo = 1 # header
+    hi = len(data)-1
+    while lo<hi:
+        mid = (lo+hi)//2
+        if key(data[mid])<=reference:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+def getStatisticalData(data):
+    memIndex = 6;
+    stateIndex = 5;
+
+    memValues = map(lambda rec: rec[memIndex], LazyEvalList(data[1:]));
+    maxMem = max(memValues);
+    maxMem = maxMem/1024./1024.
+
+    avgMem = sum(memValues)/len(memValues);
+    avgMem = avgMem/1024./1024.
+
+    stateValues = map(lambda rec: rec[stateIndex], LazyEvalList(data[1:]));
+    maxStates = max(stateValues);
+    avgStates = sum(stateValues)/len(stateValues)
+
+    return (maxMem, avgMem, maxStates, avgStates)
+
+def stripCommonPathPrefix(table, col):
+    paths = map(os.path.normpath, [row[col] for row in table])
+    pathElts = [p.split('/') for p in paths]
+    zipped = zip(*pathElts)
+    idx = 0
+    for idx,elts in enumerate(zipped):
+        if len(set(elts))>1:
+            break
+    paths = ['/'.join(elts[idx:]) for elts in pathElts]
+    for i,row in enumerate(table):
+        table[i] = row[:col] + (paths[i],) + row[col+1:]
+
+
+def getKeyIndex(keyName,labels):
+    def normalizedKey(key):
+        if key.endswith("(#)") or key.endswith("(%)") or key.endswith("(s)"):
+            key = key[:-3]
+        return key.lower()
+
+    keyIndex = None
+    for i,title in enumerate(labels):
+        if normalizedKey(title)==normalizedKey(keyName):
+            keyIndex = i
+            break
+    else:
+        raise ValueError,'invalid keyName to sort by: %s'%`keyName`
+    return keyIndex
+
+
+def sortTable(table, labels, keyName, ascending=False):   
+    indices = range(len(table))
+    keyIndex = getKeyIndex(keyName,labels)
+    indices.sort(key = lambda n: table[n][keyIndex])
+    if not ascending:
+        indices.reverse()
+    table[:] = [table[n] for n in indices]
+
+
+def printTable(table, precision):
+    def strOrNone(ob):
+        if ob is None:
+            return ''
+        elif isinstance(ob,float):
+            # prepare format string according to settings of
+            # floating number
+            formatString = '%.'
+            formatString += '%d'%precision
+            formatString += 'f'
+            return formatString%ob
+        else:
+            return str(ob)
+    def printRow(row):
+        if row is None:
+            print header
+        else:
+            out.write('|')
+            for j,elt in enumerate(row):
+                if j:
+                    out.write(' %*s |'%(widths[j],elt))
+                else:
+                    out.write(' %-*s |'%(widths[j],elt))
+            out.write('\n')
+    maxLen = max([len(r) for r in table if r])
+    for i,row in enumerate(table):
+        if row:
+            table[i] = row + (None,)*(maxLen-len(row))
+    table = [row and map(strOrNone,row) or None for row in table]
+    tableLens = [map(len,row) for row in table if row]
+    from pprint import pprint
+    widths = map(max, zip(*tableLens))
+    out = sys.stdout
+    header = '-'*(sum(widths) + maxLen*3 + 1)
+    map(printRow, table)
+        
+
+def main(args):
+    from optparse import OptionParser
+    
+    # inherit from the OptionParser class and override format_epilog
+    # in order to get newlines in the 'epilog' text
+    class MyParser(OptionParser):
+        def format_epilog(self, formatter):
+            return self.epilog
+       
+    op = MyParser(usage="usage: %prog [options] directories",
+                  epilog="""\
+
+LEGEND
+------
+Instrs:      Number of executed instructions
+Time:        Total wall time (s)
+TUser:       Total user time
+ICov:        Instruction coverage in the LLVM bitcode (%)
+BCov:        Branch coverage in the LLVM bitcode (%)
+ICount:      Total static instructions in the LLVM bitcode
+TSolver:     Time spent in the constraint solver
+States:      Number of currently active states
+Mem:         Megabytes of memory currently used
+Queries:     Number of queries issued to STP
+AvgQC:       Average number of query constructs per query
+Tcex:        Time spent in the counterexample caching code
+Tfork:       Time spent forking
+TResolve:    Time spent in object resolution
+\n""")
+
+    op.add_option('', '--print-more', dest='printMore',
+                  action='store_true', default=False,
+                  help='Print extra information (needed when monitoring an ongoing run).')
+    op.add_option('', '--print-all', dest='printAll',
+                  action='store_true', default=False,
+                  help='Print all available information.')
+    op.add_option('', '--print-rel-times', dest='printRelTimes',
+                  action='store_true', default=False,
+                  help='Print only values of measured times. Values are relative to the measured system execution time.')
+    op.add_option('', '--print-abs-times', dest='printAbsTimes',
+                  action='store_true', default=False,
+                  help='Print only values of measured times. Absolute values (in seconds) are printed.')    
+    op.add_option('','--sort-by', dest='sortBy',
+                  help='key value to sort by, e.g. --sort-by=Instrs')
+    op.add_option('','--ascending', dest='ascending',
+                  action='store_true', default=False,
+                  help='sort in ascending order (default is descending)')
+    op.add_option('','--compare-by', dest='compBy',
+                  help="key value on which to compare runs to the reference one (which is the first one).  E.g., --compare-by=Instrs shows how each run compares to the reference run after executing the same number of instructions as the reference run.  If a run hasn't executed as many instructions as the reference one, we simply print the statistics at the end of that run.")
+    op.add_option('','--compare-at', dest='compAt',
+                  help='value to compare the runs at. Can be special value \'last\' to compare at the last point which makes sense. Use in conjunction with --compare-by')
+    op.add_option('','--precision', dest='dispPrecision', default=2, metavar='INTEGER',
+                  help='Floating point numbers display precision. By default it is set to 2.')
+    opts,dirs = op.parse_args()
+    
+    if not dirs:
+        op.error("no directories given.")
+
+    # make sure that precision is a positive integer            
+    if not isinstance(opts.dispPrecision, int):
+        try:            
+            precision = int(opts.dispPrecision)              
+        except ValueError:
+            op.error("display precision should be an integer")           
+            # make sure that the precision is a positive integer as well
+        if not (0 <= precision):
+            op.error("display precision should be positive")
+    else:
+        precision = opts.dispPrecision
+            
+
+    actualDirs = []
+    for dir in dirs:
+        if os.path.exists(os.path.join(dir,'info')):
+            actualDirs.append(dir)
+        else:
+            for root,dirs,_ in os.walk(dir):
+                for d in dirs:
+                    p = os.path.join(root,d)
+                    if os.path.exists(os.path.join(p,'info')):
+                        actualDirs.append(p)
+    dirs = actualDirs
+    
+    summary = []
+    ssummary = []
+    
+    if (opts.printAll):
+        labels = ('Path','Instrs','Time(s)','ICov(%)','BCov(%)','ICount','TSolver(%)', 'States', 'maxStates', 'avgStates', 'Mem(MB)', 'maxMem(MB)', 'avgMem(MB)', 'Queries', 'AvgQC', 'Tcex(%)', 'Tfork(%)')
+    elif (opts.printRelTimes):
+        labels = ('Path', 'Time(s)', 'TUser(%)', 'TSolver(%)', 'Tcex(%)', 'Tfork(%)', 'TResolve(%)')
+    elif (opts.printAbsTimes):
+        labels = ('Path', 'Time(s)', 'TUser(s)', 'TSolver(s)', 'Tcex(s)', 'Tfork(s)', 'TResolve(s)')
+    elif (opts.printMore):
+        labels = ('Path','Instrs','Time(s)','ICov(%)','BCov(%)','ICount','TSolver(%)', 'States', 'maxStates', 'Mem(MB)', 'maxMem(MB)')
+    else:
+        labels = ('Path','Instrs','Time(s)','ICov(%)','BCov(%)','ICount','TSolver(%)')
+
+
+    def addRecord(Path,rec, stats):
+        (I,BFull,BPart,BTot,T,St,Mem,QTot,QCon,NObjs,Treal,SCov,SUnc,QT,Ts,Tcex,Tf,Tr) = rec
+        (maxMem,avgMem,maxStates,avgStates) = stats
+        # special case for straight-line code: report 100% branch coverage
+        if BTot == 0:
+            BFull = BTot = 1
+
+        Mem=Mem/1024./1024.
+        AvgQC = int(QCon/max(1,QTot))
+        if (opts.printAll):
+            table.append((Path, I, Treal, 100.*SCov/(SCov+SUnc), 100.*(2*BFull+BPart)/(2.*BTot),
+                          SCov+SUnc, 100.*Ts/Treal, St, maxStates, avgStates, Mem, maxMem, avgMem, QTot, AvgQC, 100.*Tcex/Treal, 100.*Tf/Treal))
+        elif (opts.printRelTimes):
+            table.append((Path, Treal, 100.*T/Treal, 100.*Ts/Treal, 100.*Tcex/Treal, 100.*Tf/Treal, 100.*Tr/Treal))
+        elif (opts.printAbsTimes):
+            table.append((Path, Treal, T, Ts, Tcex, Tf, Tr))
+        elif (opts.printMore):
+            table.append((Path, I, Treal, 100.*SCov/(SCov+SUnc), 100.*(2*BFull+BPart)/(2.*BTot),
+                          SCov+SUnc, 100.*Ts/Treal, St, maxStates, Mem, maxMem))
+        else:
+            table.append((Path, I, Treal, 100.*SCov/(SCov+SUnc), 100.*(2*BFull+BPart)/(2.*BTot),
+                          SCov+SUnc, 100.*Ts/Treal))
+        
+    def addRow(Path,data,stats):
+        data = tuple(data[:18]) + (None,)*(18-len(data))
+        addRecord(Path,data,stats)
+        if not summary:
+            summary[:] = list(data)
+            ssummary[:] = list(stats);
+        else:
+            summary[:] = [(a+b) for a,b in zip(summary,data)]
+            ssummary[:] = [(a+b) for a,b in zip(ssummary,stats)]
+
+    datas = [(dir,LazyEvalList(list(open(getFile(dir))))) for dir in dirs]
+
+    #labels in the same order as in the stats file. used by --compare-by.
+    #current impl needs monotonic values. keep only the ones which make sense
+    rawLabels=('Instrs','','','','','','','Queries','','','Time','ICov','','','','','','')
+    
+    if opts.compBy:
+        compareIndex = getKeyIndex(opts.compBy,rawLabels)
+        if opts.compAt:
+            if opts.compAt == 'last':
+                referenceValue = min(map(lambda rec: rec[1][-1][compareIndex], datas))
+            else:
+                referenceValue = opts.compAt
+        else:
+            referenceValue = datas[0][1][-1][compareIndex]
+
+    table = []    
+    for dir,data in datas:
+        try:
+            if opts.compBy:
+                matchIdx = getMatchedRecordIdx(data,referenceValue,lambda f: f[compareIndex])
+                stats = getStatisticalData(LazyEvalList(data[0:matchIdx+1]))
+                addRow(dir,data[matchIdx],stats)
+            else:
+                stats = getStatisticalData(data)
+                addRow(dir, data[len(data)-1],stats)  #getLastRecord(dir))
+        except IOError:
+            print 'Unable to open: ',dir
+            continue
+
+    stripCommonPathPrefix(table, 0)
+    if opts.sortBy:
+        sortTable(table, labels, opts.sortBy, opts.ascending)
+    if not table:
+        sys.exit(1)
+    elif len(table)>1:
+        table.append(None)
+        addRecord('Total (%d)'%(len(table)-1,),summary, ssummary)
+    table[0:0] = [None,labels,None]
+    table.append(None)
+                
+    printTable(table, precision)              
+        
+        
+if __name__=='__main__':
+    main(sys.argv)
