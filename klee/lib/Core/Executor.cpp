@@ -1,3 +1,5 @@
+/* -*- mode: c++; c-basic-offset: 2; -*- */
+
 //===-- Executor.cpp ------------------------------------------------------===//
 //
 //                     The KLEE Symbolic Virtual Machine
@@ -114,6 +116,18 @@ namespace {
   cl::opt<bool>
   DebugPrintInstructions("debug-print-instructions", 
                          cl::desc("Print instructions during execution."));
+
+  cl::opt<bool>
+  DebugPrintStates("debug-print-states",
+                   cl::desc("Print states during execution."));
+
+  cl::opt<bool>
+  DebugPrintFullMO("debug-print-full-mo",
+                   cl::desc("Print all MOs when dumping states."));
+
+  cl::opt<unsigned>
+  DebugMOThreshold("debug-mo-threshold",
+                   cl::init(10));
 
   cl::opt<bool>
   DebugCheckForImpliedValues("debug-check-for-implied-values");
@@ -2437,6 +2451,110 @@ void Executor::bindModuleConstants() {
   }
 }
 
+namespace klee {
+
+void printMemory(const MemoryObject *mo, const ObjectState *os)
+{
+  std::cerr << "|\tMO " << mo->id << ":\n";
+  std::cerr << "|\t\tSize: " << os->size << "\n";
+
+  if (os->size >= DebugMOThreshold)
+    return;
+
+  std::cerr << "|\t\tBytes:\n";
+  for (unsigned i = 0; i < os->size; i++) {
+    std::cerr << "|\t\t\t[" << i << " "
+              << os->isByteConcrete(i)
+              << os->isByteKnownSymbolic(i)
+              << os->isByteFlushed(i) << "] = ";
+    ref<Expr> e = os->read8(i);
+    std::cerr << e << "\n";
+  }
+}
+
+void printGlobals(ExecutionState &state, std::map<const llvm::GlobalValue*, MemoryObject*>& globals)
+{
+  if (!DebugPrintStates)
+    return;
+
+  std::cerr << "Globals\n";
+  for (std::map<const llvm::GlobalValue*, MemoryObject*>::iterator it = globals.begin(),
+         ie = globals.end(); it != ie; ++it) {
+    const MemoryObject *mo = it->second;
+    const ObjectState *os = state.addressSpace.findObject(mo);
+    printMemory(mo, os);
+  }
+  std::cerr << "======================================================================\n";
+}
+
+void printState(ExecutionState &state) {
+  if (!DebugPrintStates)
+    return;
+
+  // Print the instruction executed
+  std::cerr << "State " << static_cast<void *>(&state) << "\n";
+  std::cerr << "+-- Instruction at ";
+  const InstructionInfo &ii = *state.pc->info;
+  if (ii.file != "")
+    std::cerr << ii.file << ":" << ii.line << ":\n";
+  else
+    std::cerr << "[no debug info]:\n";
+  llvm::errs() << "|\t" << *(state.pc->inst);
+  std::cerr << "\n";
+
+  // Print top stack frame
+  std::cerr << "+-- Top stack frame\n";
+  StackFrame &sf = state.stack.back();
+  std::cerr << "|\tallocas:\n";
+  for (std::vector<const MemoryObject*>::iterator it = sf.allocas.begin(),
+         ie = sf.allocas.end(); it != ie; ++it) {
+    const MemoryObject *mo = *it;
+    std::cerr << "|\t\tMO id = " << std::setw(6) << mo->id << "  ";
+    std::cerr << "[" << (void*)(mo->address) << ", " <<
+      (void*)(mo->address + mo->size) << ")\n";
+  }
+
+  int nrLocals = sf.kf->numRegisters;
+  std::cerr << "|\tlocals [0-" << nrLocals - 1 << "]:\n";
+  for (int i = 0; i < nrLocals; i++) {
+    Cell *c = sf.locals + i;
+    if (c->value.get() == NULL)
+      continue;
+
+    std::cerr << "|\t\t" << i << ": ";
+    c->value.get()->print(std::cerr);
+    std::cerr << "\n";
+  }
+
+  // Print memory address mapping
+  std::cerr << "+-- Memory Mapping\n";
+  if (DebugPrintFullMO) {
+    MemoryMap &mm = state.addressSpace.objects;
+    MemoryMap::iterator it = mm.begin();
+    MemoryMap::iterator ie = mm.end();
+    if (it != ie) {
+      for (; it != ie; ++it) {
+        // std::cerr << "|\tMO " << it->first->id << ":\n";
+        // ObjectState &os = *(it->second);
+        printMemory(it->first, it->second);
+      }
+    }
+  } else {
+    // Only print MOs involved in allocas
+    for (std::vector<const MemoryObject*>::iterator it = sf.allocas.begin(),
+           ie = sf.allocas.end(); it != ie; ++it) {
+      const MemoryObject *mo = *it;
+      const ObjectState *os = state.addressSpace.findObject(mo);
+      printMemory(mo, os);
+    }
+  }
+
+  // End of dump
+  std::cerr << "+----------------------------------------------------------------------\n";
+}
+
+}
+
 void Executor::run(ExecutionState &initialState) {
   bindModuleConstants();
 
@@ -2514,12 +2632,15 @@ void Executor::run(ExecutionState &initialState) {
 
   searcher->update(0, states, std::set<ExecutionState*>());
 
+  printGlobals(initialState, globalObjects);
+  printState(initialState);
   while (!states.empty() && !haltExecution) {
     ExecutionState &state = searcher->selectState();
     KInstruction *ki = state.pc;
     stepInstruction(state);
 
     executeInstruction(state, ki);
+    printState(state);
     processTimers(&state, MaxInstructionTime);
 
     if (MaxMemory) {
@@ -3251,6 +3372,7 @@ void Executor::runFunctionAsMain(Function *f,
     arguments.push_back(ConstantExpr::alloc(argc, Expr::Int32));
 
     if (++ai!=ae) {
+      std::cerr << argc << " " << envc << "\n";
       argvMO = memory->allocate((argc+1+envc+1+1) * NumPtrBytes, false, true,
                                 f->begin()->begin());
       

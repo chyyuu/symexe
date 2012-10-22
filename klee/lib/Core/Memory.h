@@ -147,6 +147,8 @@ public:
 
 class ObjectState {
 private:
+  friend void printMemory(const class MemoryObject *mo, const class ObjectState *os);
+
   friend class AddressSpace;
   unsigned copyOnWriteOwner; // exclusively for AddressSpace
 
