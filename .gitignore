@@ -24,3 +24,11 @@ docs/doxygen
 *.lai
 *.la
 *.a
+
+*~
+llvm-2.9/
+setup-llvm-2.9-env.sh
+stp-r940.tar.bz2
+klee/runtime/Makefile
+klee/unittests/Makefile
+

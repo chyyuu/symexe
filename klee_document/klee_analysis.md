@@ -417,7 +417,7 @@ $ make -j9
 
 ```
 
-$ svn co -r 940 https://stp-fast- prover.svn.sourceforge.net/svnroot/stp-fast-prover/trunk/stp stp 
+$ svn co -r 940 https://stp-fast-prover.svn.sourceforge.net/svnroot/stp-fast-prover/trunk/stp stp 
 
 $ cd stp 
 
