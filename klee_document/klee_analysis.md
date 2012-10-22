@@ -400,8 +400,8 @@ $ wget http://llvm.org/releases/2.9/llvm-gcc4.2-2.9-x86_64-linux.tar.bz2
 
 $ tar jxf llvm-gcc4.2-2.9-x86_64-linux.tar.bz2
 
-$ export PATH=/home2/chy/researchs/klee/klee_env/llvm-gcc4.2-2.9-
-x86_64-linux/bin:$PATH
+$ export PATH=/home2/chy/researchs/klee/klee_env/llvm-gcc4.2-2.9-x86_64-linux/bin:/home/devel/github/symexe/llvm-2.9/Release+Asserts/bin:/home/d
+evel/github/symexe/klee/Release+Asserts/bin:$PATH
 
 $ tar zxvf llvm-2.9.tgz 
 
