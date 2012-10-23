@@ -56,3 +56,25 @@ open, read, write, stat, lseek, ftruncate,
 ioctl).
 
 ### modeling the file system
+
+
+By only modeling the much simpler, low-level
+system call API, we can get the richer functionality by
+just compiling one of the many implementations of the
+C standard library (we use uClibc [6]) and let it worry
+about correctness. As a side-effect, we simultaneously
+check the library for errors as well.
+
+
+## Test
+
+llvm-gcc --emit-llvm -c tr.c -o tr.bc
+
+klee --max-time 2 --sym-args 1 10 10
+--sym-files 2 2000 --max-fail 1 tr.bc
+
+
+./run <tool-name> --max-time 60
+--sym-args 10 2 2
+--sym-files 2 8
+[--max-fail 1]
