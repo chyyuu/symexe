@@ -3,6 +3,9 @@
 ## 启动流程分析
 
 ```
+. setup-llvm-2.9-env.sh
+cd klee_document/mjj-docs/klee/examples/
+
 .gdbinit
 set args -debug-print-states ex01.o
 
@@ -64,3 +67,12 @@ L3436
    run(*state);
            调用void Executor::run(ExecutionState &initialState) {
 
+    对run函数的分析
+
+          states.insert(&initialState);  
+    什么是seed模式和非seed模式?
+
+           executeInstruction(state, ki);
+                    调用L1421:  void Executor::executeInstruction(ExecutionState &state, KInstruction *ki) {
+
+           updateStates(&state);    
